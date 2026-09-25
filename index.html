@@ -247,6 +247,43 @@
     padding: 30px 10px;
     font-size: 14px;
   }
+
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 42, 30, 0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    z-index: 20;
+  }
+
+  .modal-caja {
+    background: var(--blanco);
+    border-radius: 14px;
+    padding: 20px;
+    max-width: 420px;
+    width: 100%;
+    max-height: 80vh;
+    overflow-y: auto;
+  }
+
+  .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+
+  .modal-cuerpo {
+    white-space: pre-wrap;
+    font-size: 14px;
+    color: var(--tinta-900);
+    margin-bottom: 18px;
+    line-height: 1.5;
+  }
 </style>
 </head>
 <body>
@@ -275,6 +312,7 @@
       <button class="tab-btn" data-tab="pagos">Pagos</button>
       <button class="tab-btn" data-tab="alumnos">Alumnos</button>
       <button class="tab-btn" data-tab="limpieza">Limpieza</button>
+      <button class="tab-btn" data-tab="maestro">Maestro</button>
     </nav>
 
     <main>
@@ -316,7 +354,22 @@
         </div>
         <div id="limpieza-lista"></div>
       </section>
+
+      <section id="tab-maestro" class="tab-panel">
+        <div id="maestro-lista"></div>
+      </section>
     </main>
+  </div>
+
+  <div id="modal-overlay" class="modal-overlay oculto">
+    <div class="modal-caja">
+      <div class="modal-header">
+        <strong id="modal-titulo"></strong>
+        <button type="button" class="btn-chico secundario" id="modal-cerrar">Cerrar</button>
+      </div>
+      <div class="modal-cuerpo" id="modal-cuerpo"></div>
+      <button type="button" class="btn-primario" id="modal-compartir" style="margin-top: 0;">Compartir por WhatsApp</button>
+    </div>
   </div>
 
 <script type="module">
@@ -325,7 +378,7 @@
     getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut
   } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js';
   import {
-    getFirestore, collection, query, where, orderBy, limit, onSnapshot
+    getFirestore, collection, query, where, orderBy, limit, onSnapshot, getDocs
   } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
 
   const firebaseConfig = {
@@ -406,6 +459,7 @@
   let ventasCache = [];
   let pagosCache = [];
   let limpiezaCache = [];
+  let liquidacionesCache = [];
 
   let unsubVentas = null, rangoVentas = null;
   function cargarVentas(desdeMs, hastaMs, etiqueta) {
@@ -508,7 +562,94 @@
     cargarVentas(null, null, null);
     cargarPagos(null, null, null);
     cargarLimpieza(null, null, null);
+
+    onSnapshot(query(collection(db, 'liquidaciones_maestro'), orderBy('fechaLiquidacion', 'desc'), limit(50)), (snap) => {
+      liquidacionesCache = [];
+      snap.forEach((d) => liquidacionesCache.push(d.data()));
+      renderMaestro();
+    });
   }
+
+  const etiquetaSemanasLiquidacion = (l) =>
+    l.semanaDesde === l.semanaHasta ? `Semana ${l.semanaDesde}` : `Semanas ${l.semanaDesde} a ${l.semanaHasta}`;
+
+  function renderMaestro() {
+    const cont = $('maestro-lista');
+    cont.innerHTML = '';
+    if (liquidacionesCache.length === 0) {
+      cont.appendChild(vacio('Aún no se ha registrado ningún pago al maestro.'));
+      return;
+    }
+
+    liquidacionesCache.forEach((l) => {
+      const t = tarjeta(`
+        <div class="fila-superior">
+          <strong>${escapar(l.cursoNombre)}</strong>
+          <span class="monto">${money(l.totalComision)}</span>
+        </div>
+        <div class="detalle">${fechaHora(l.fechaLiquidacion)} · ${etiquetaSemanasLiquidacion(l)}</div>
+        <div class="detalle-chico">${money(l.totalPagos)} en pagos · ${l.cantidadPagos} pagos · ${l.cantidadAlumnos} alumnos</div>
+      `);
+      t.style.cursor = 'pointer';
+      t.addEventListener('click', () => mostrarDetalleLiquidacion(l));
+      cont.appendChild(t);
+    });
+  }
+
+  async function mostrarDetalleLiquidacion(liquidacion) {
+    const snap = await getDocs(query(collection(db, 'pagos'), where('liquidacionId', '==', liquidacion.id)));
+    const porAlumno = new Map();
+    snap.forEach((d) => {
+      const p = d.data();
+      if (!porAlumno.has(p.alumnoId)) porAlumno.set(p.alumnoId, []);
+      porAlumno.get(p.alumnoId).push(p);
+    });
+
+    const filas = [...porAlumno.entries()]
+      .map(([alumnoId, pagosDelAlumno]) => ({
+        nombre: alumnos[alumnoId]?.nombreCompleto || '(alumno eliminado)',
+        monto: pagosDelAlumno.reduce((acc, p) => acc + p.monto, 0),
+        semanas: pagosDelAlumno.length
+      }))
+      .sort((a, b) => a.nombre.localeCompare(b.nombre));
+
+    const rango = etiquetaSemanasLiquidacion(liquidacion);
+    const lineasTexto = filas
+      .map((f) => `• ${f.nombre} — ${money(f.monto)} (${f.semanas === 1 ? '1 semana' : f.semanas + ' semanas'})`)
+      .join('\n');
+
+    $('modal-titulo').textContent = fechaHora(liquidacion.fechaLiquidacion);
+    $('modal-cuerpo').textContent =
+      `${liquidacion.cursoNombre} · ${rango}\n\nComisión pagada: ${money(liquidacion.totalComision)}\n\nPor alumno:\n${lineasTexto}`;
+    $('modal-overlay').classList.remove('oculto');
+
+    const comprobante =
+      `Escuela de Barberos — Comprobante de pago al maestro\n` +
+      `${fechaHora(liquidacion.fechaLiquidacion)}\n` +
+      `${liquidacion.cursoNombre} · ${rango}\n\n` +
+      `Total de pagos: ${money(liquidacion.totalPagos)}\n` +
+      `Comisión pagada: ${money(liquidacion.totalComision)}\n\n` +
+      `Por alumno:\n${lineasTexto}`;
+    $('modal-compartir').onclick = () => compartirTexto(comprobante);
+  }
+
+  async function compartirTexto(texto) {
+    if (navigator.share) {
+      try { await navigator.share({ text: texto }); } catch (e) { /* el usuario canceló */ }
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(texto);
+      alert('Se copió el comprobante. Pégalo en WhatsApp o donde lo necesites.');
+    } catch (e) {
+      alert('No se pudo compartir automáticamente. Copia el texto manualmente.');
+    }
+  }
+
+  $('modal-cerrar').addEventListener('click', () => $('modal-overlay').classList.add('oculto'));
+  $('modal-overlay').addEventListener('click', (e) => {
+    if (e.target.id === 'modal-overlay') $('modal-overlay').classList.add('oculto');
+  });
 
   function renderVentas() {
     const base = rangoVentas ? ventasCache : ventasCache.filter((v) => esHoy(v.fechaHora));
