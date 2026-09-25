@@ -174,6 +174,38 @@
     margin-bottom: 14px;
   }
 
+  .filtro-fecha {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 14px;
+  }
+
+  .filtro-fecha input[type="date"] {
+    flex: 1;
+    min-width: 130px;
+    padding: 9px 10px;
+    border: 1px solid var(--divisor);
+    border-radius: 8px;
+    font-size: 13px;
+    background: var(--blanco);
+    color: var(--tinta-900);
+  }
+
+  .btn-chico {
+    padding: 9px 14px;
+    font-size: 13px;
+    background: var(--verde-800);
+    color: var(--blanco);
+  }
+
+  .btn-chico.secundario {
+    background: transparent;
+    color: var(--verde-800);
+    border: 1px solid var(--verde-800);
+  }
+
   .tarjeta {
     background: var(--blanco);
     border-radius: 10px;
@@ -247,11 +279,23 @@
 
     <main>
       <section id="tab-ventas" class="tab-panel activo">
+        <div class="filtro-fecha">
+          <input type="date" id="ventas-desde">
+          <input type="date" id="ventas-hasta">
+          <button type="button" class="btn-chico" id="ventas-buscar">Buscar</button>
+          <button type="button" class="btn-chico secundario oculto" id="ventas-limpiar">Ver recientes</button>
+        </div>
         <div class="resumen" id="ventas-resumen">Cargando…</div>
         <div id="ventas-lista"></div>
       </section>
 
       <section id="tab-pagos" class="tab-panel">
+        <div class="filtro-fecha">
+          <input type="date" id="pagos-desde">
+          <input type="date" id="pagos-hasta">
+          <button type="button" class="btn-chico" id="pagos-buscar">Buscar</button>
+          <button type="button" class="btn-chico secundario oculto" id="pagos-limpiar">Ver recientes</button>
+        </div>
         <div class="resumen" id="pagos-resumen">Cargando…</div>
         <div id="pagos-lista"></div>
       </section>
@@ -264,6 +308,12 @@
       </section>
 
       <section id="tab-limpieza" class="tab-panel">
+        <div class="filtro-fecha">
+          <input type="date" id="limpieza-desde">
+          <input type="date" id="limpieza-hasta">
+          <button type="button" class="btn-chico" id="limpieza-buscar">Buscar</button>
+          <button type="button" class="btn-chico secundario oculto" id="limpieza-limpiar">Ver recientes</button>
+        </div>
         <div id="limpieza-lista"></div>
       </section>
     </main>
@@ -275,7 +325,7 @@
     getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut
   } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js';
   import {
-    getFirestore, collection, query, orderBy, limit, onSnapshot
+    getFirestore, collection, query, where, orderBy, limit, onSnapshot
   } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
 
   const firebaseConfig = {
@@ -301,6 +351,8 @@
     return new Date(y, m - 1, d).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' });
   };
   const esHoy = (ms) => new Date(ms).toDateString() === new Date().toDateString();
+  const etiquetaRango = (desdeStr, hastaStr) =>
+    desdeStr === hastaStr ? fechaIso(desdeStr) : `${fechaIso(desdeStr)} al ${fechaIso(hastaStr)}`;
 
   function escapar(texto) {
     const div = document.createElement('div');
@@ -355,6 +407,86 @@
   let pagosCache = [];
   let limpiezaCache = [];
 
+  let unsubVentas = null, rangoVentas = null;
+  function cargarVentas(desdeMs, hastaMs, etiqueta) {
+    if (unsubVentas) unsubVentas();
+    rangoVentas = etiqueta || null;
+    const q = desdeMs != null
+      ? query(collection(db, 'ventas'), where('fechaHora', '>=', desdeMs), where('fechaHora', '<=', hastaMs), orderBy('fechaHora', 'desc'))
+      : query(collection(db, 'ventas'), orderBy('fechaHora', 'desc'), limit(100));
+    unsubVentas = onSnapshot(q, (snap) => {
+      ventasCache = [];
+      snap.forEach((d) => ventasCache.push(d.data()));
+      renderVentas();
+    });
+  }
+
+  let unsubPagos = null, rangoPagos = null;
+  function cargarPagos(desdeMs, hastaMs, etiqueta) {
+    if (unsubPagos) unsubPagos();
+    rangoPagos = etiqueta || null;
+    const q = desdeMs != null
+      ? query(collection(db, 'pagos'), where('fechaHora', '>=', desdeMs), where('fechaHora', '<=', hastaMs), orderBy('fechaHora', 'desc'))
+      : query(collection(db, 'pagos'), orderBy('fechaHora', 'desc'), limit(200));
+    unsubPagos = onSnapshot(q, (snap) => {
+      pagosCache = [];
+      snap.forEach((d) => pagosCache.push(d.data()));
+      renderPagos();
+    });
+  }
+
+  let unsubLimpieza = null, rangoLimpieza = null;
+  function cargarLimpieza(desdeIso, hastaIso, etiqueta) {
+    if (unsubLimpieza) unsubLimpieza();
+    rangoLimpieza = etiqueta || null;
+    const q = desdeIso
+      ? query(collection(db, 'limpieza'), where('fecha', '>=', desdeIso), where('fecha', '<=', hastaIso), orderBy('fecha', 'desc'))
+      : query(collection(db, 'limpieza'), orderBy('fecha', 'desc'), limit(30));
+    unsubLimpieza = onSnapshot(q, (snap) => {
+      limpiezaCache = [];
+      snap.forEach((d) => limpiezaCache.push(d.data()));
+      renderLimpieza();
+    });
+  }
+
+  function configurarFiltroFecha(prefijo, alBuscar, alLimpiar) {
+    const desde = $(`${prefijo}-desde`);
+    const hasta = $(`${prefijo}-hasta`);
+    const btnBuscar = $(`${prefijo}-buscar`);
+    const btnLimpiar = $(`${prefijo}-limpiar`);
+
+    btnBuscar.addEventListener('click', () => {
+      if (!desde.value || !hasta.value) return;
+      alBuscar(desde.value, hasta.value);
+      btnLimpiar.classList.remove('oculto');
+    });
+
+    btnLimpiar.addEventListener('click', () => {
+      desde.value = '';
+      hasta.value = '';
+      alLimpiar();
+      btnLimpiar.classList.add('oculto');
+    });
+  }
+
+  function rangoAMillis(desdeStr, hastaStr) {
+    return [new Date(desdeStr + 'T00:00:00').getTime(), new Date(hastaStr + 'T23:59:59.999').getTime()];
+  }
+
+  configurarFiltroFecha('ventas', (desdeStr, hastaStr) => {
+    const [inicio, fin] = rangoAMillis(desdeStr, hastaStr);
+    cargarVentas(inicio, fin, etiquetaRango(desdeStr, hastaStr));
+  }, () => cargarVentas(null, null, null));
+
+  configurarFiltroFecha('pagos', (desdeStr, hastaStr) => {
+    const [inicio, fin] = rangoAMillis(desdeStr, hastaStr);
+    cargarPagos(inicio, fin, etiquetaRango(desdeStr, hastaStr));
+  }, () => cargarPagos(null, null, null));
+
+  configurarFiltroFecha('limpieza', (desdeStr, hastaStr) => {
+    cargarLimpieza(desdeStr, hastaStr, etiquetaRango(desdeStr, hastaStr));
+  }, () => cargarLimpieza(null, null, null));
+
   let escuchasIniciadas = false;
   function iniciarEscuchas() {
     if (escuchasIniciadas) return;
@@ -373,33 +505,23 @@
       renderPagos();
     });
 
-    onSnapshot(query(collection(db, 'ventas'), orderBy('fechaHora', 'desc'), limit(100)), (snap) => {
-      ventasCache = [];
-      snap.forEach((d) => ventasCache.push(d.data()));
-      renderVentas();
-    });
-
-    onSnapshot(query(collection(db, 'pagos'), orderBy('fechaHora', 'desc'), limit(200)), (snap) => {
-      pagosCache = [];
-      snap.forEach((d) => pagosCache.push(d.data()));
-      renderPagos();
-    });
-
-    onSnapshot(query(collection(db, 'limpieza'), orderBy('fecha', 'desc'), limit(30)), (snap) => {
-      limpiezaCache = [];
-      snap.forEach((d) => limpiezaCache.push(d.data()));
-      renderLimpieza();
-    });
+    cargarVentas(null, null, null);
+    cargarPagos(null, null, null);
+    cargarLimpieza(null, null, null);
   }
 
   function renderVentas() {
-    const hoy = ventasCache.filter((v) => esHoy(v.fechaHora));
-    const total = hoy.reduce((acc, v) => acc + v.total, 0);
-    $('ventas-resumen').textContent = `Hoy: ${money(total)} (${hoy.length} venta${hoy.length === 1 ? '' : 's'})`;
+    const base = rangoVentas ? ventasCache : ventasCache.filter((v) => esHoy(v.fechaHora));
+    const etiqueta = rangoVentas || 'Hoy';
+    const total = base.reduce((acc, v) => acc + v.total, 0);
+    $('ventas-resumen').textContent = `${etiqueta}: ${money(total)} (${base.length} venta${base.length === 1 ? '' : 's'})`;
 
     const cont = $('ventas-lista');
     cont.innerHTML = '';
-    if (ventasCache.length === 0) { cont.appendChild(vacio('Aún no hay ventas registradas.')); return; }
+    if (ventasCache.length === 0) {
+      cont.appendChild(vacio(rangoVentas ? 'No hay ventas en ese rango.' : 'Aún no hay ventas registradas.'));
+      return;
+    }
 
     ventasCache.forEach((v) => {
       const detalle = (v.detalles || []).map((d) => `${d.cantidad}x ${d.nombreProducto}`).join(', ');
@@ -415,9 +537,10 @@
   }
 
   function renderPagos() {
-    const hoy = pagosCache.filter((p) => esHoy(p.fechaHora));
-    const total = hoy.reduce((acc, p) => acc + p.monto, 0);
-    $('pagos-resumen').textContent = `Hoy: ${money(total)}`;
+    const base = rangoPagos ? pagosCache : pagosCache.filter((p) => esHoy(p.fechaHora));
+    const etiqueta = rangoPagos || 'Hoy';
+    const total = base.reduce((acc, p) => acc + p.monto, 0);
+    $('pagos-resumen').textContent = `${etiqueta}: ${money(total)}`;
 
     const grupos = new Map();
     pagosCache.forEach((p) => {
@@ -428,7 +551,10 @@
 
     const cont = $('pagos-lista');
     cont.innerHTML = '';
-    if (grupos.size === 0) { cont.appendChild(vacio('Aún no hay pagos registrados.')); return; }
+    if (grupos.size === 0) {
+      cont.appendChild(vacio(rangoPagos ? 'No hay pagos en ese rango.' : 'Aún no hay pagos registrados.'));
+      return;
+    }
 
     grupos.forEach((filas) => {
       const primera = filas[0];
@@ -470,7 +596,10 @@
   function renderLimpieza() {
     const cont = $('limpieza-lista');
     cont.innerHTML = '';
-    if (limpiezaCache.length === 0) { cont.appendChild(vacio('Aún no hay registros de limpieza.')); return; }
+    if (limpiezaCache.length === 0) {
+      cont.appendChild(vacio(rangoLimpieza ? 'No hay registros en ese rango.' : 'Aún no hay registros de limpieza.'));
+      return;
+    }
 
     const tareas = ['barrer', 'trapear', 'limpiarPuertas', 'limpiarVidrios', 'limpiarEspejos', 'limpiarRecepcion'];
     limpiezaCache.forEach((r) => {
