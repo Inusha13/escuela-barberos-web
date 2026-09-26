@@ -389,6 +389,19 @@
     </div>
   </div>
 
+  <div id="confirmar-overlay" class="modal-overlay oculto">
+    <div class="modal-caja">
+      <div class="modal-header">
+        <strong>Confirmar</strong>
+      </div>
+      <div class="modal-cuerpo" id="confirmar-mensaje"></div>
+      <div style="display: flex; gap: 10px;">
+        <button type="button" class="btn-chico secundario" id="confirmar-cancelar" style="flex: 1;">Cancelar</button>
+        <button type="button" class="btn-chico" id="confirmar-aceptar" style="flex: 1; background: var(--rojo);">Borrar</button>
+      </div>
+    </div>
+  </div>
+
 <script type="module">
   import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js';
   import {
@@ -459,8 +472,29 @@
     return cont;
   }
 
+  function confirmarPersonalizado(mensaje) {
+    return new Promise((resolve) => {
+      $('confirmar-mensaje').textContent = mensaje;
+      $('confirmar-overlay').classList.remove('oculto');
+
+      const limpiar = () => {
+        $('confirmar-overlay').classList.add('oculto');
+        $('confirmar-aceptar').removeEventListener('click', onAceptar);
+        $('confirmar-cancelar').removeEventListener('click', onCancelar);
+        $('confirmar-overlay').removeEventListener('click', onFondo);
+      };
+      const onAceptar = () => { limpiar(); resolve(true); };
+      const onCancelar = () => { limpiar(); resolve(false); };
+      const onFondo = (e) => { if (e.target.id === 'confirmar-overlay') onCancelar(); };
+
+      $('confirmar-aceptar').addEventListener('click', onAceptar);
+      $('confirmar-cancelar').addEventListener('click', onCancelar);
+      $('confirmar-overlay').addEventListener('click', onFondo);
+    });
+  }
+
   async function borrarDoc(coleccion, id, mensaje) {
-    if (!confirm(mensaje)) return;
+    if (!(await confirmarPersonalizado(mensaje))) return;
     try {
       await deleteDoc(doc(db, coleccion, id));
     } catch (e) {
@@ -469,7 +503,7 @@
   }
 
   async function borrarVarios(coleccion, ids, mensaje) {
-    if (!confirm(mensaje)) return;
+    if (!(await confirmarPersonalizado(mensaje))) return;
     try {
       const lote = writeBatch(db);
       ids.forEach((id) => lote.delete(doc(db, coleccion, id)));
