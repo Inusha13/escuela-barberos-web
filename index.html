@@ -340,7 +340,7 @@
 
       <section id="tab-alumnos" class="tab-panel">
         <div class="buscador">
-          <input type="text" id="alumnos-buscar" placeholder="Buscar alumno…">
+          <input type="text" id="alumnos-buscar" placeholder="Buscar por nombre o por curso…">
         </div>
         <div id="alumnos-lista"></div>
       </section>
@@ -712,9 +712,16 @@
     });
   }
 
+  const normalizarBusqueda = (texto) =>
+    (texto || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+
   function renderAlumnos() {
-    const filtro = $('alumnos-buscar').value.trim().toLowerCase();
-    const lista = Object.values(alumnos).filter((a) => a.nombreCompleto.toLowerCase().includes(filtro));
+    const filtro = normalizarBusqueda($('alumnos-buscar').value.trim());
+    const lista = Object.values(alumnos).filter((a) => {
+      if (!filtro) return true;
+      const nombreCurso = a.cursoId != null ? (cursos[a.cursoId]?.nombre || '') : '';
+      return normalizarBusqueda(a.nombreCompleto).includes(filtro) || normalizarBusqueda(nombreCurso).includes(filtro);
+    });
 
     const cont = $('alumnos-lista');
     cont.innerHTML = '';
