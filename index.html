@@ -19,6 +19,7 @@
     --azul: #90CAF9;
     --verde-promo: #A5D6A7;
     --naranja: #FFCC80;
+    --rojo: #B33A3A;
   }
 
   * { box-sizing: border-box; }
@@ -233,6 +234,22 @@
   .detalle { font-size: 13px; color: var(--tinta-600); margin-top: 3px; }
   .detalle-chico { font-size: 12px; color: var(--tinta-600); margin-top: 2px; }
 
+  .fila-acciones {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 6px;
+  }
+
+  .btn-borrar {
+    border: none;
+    background: transparent;
+    color: var(--rojo);
+    font-size: 12px;
+    padding: 4px 2px;
+    cursor: pointer;
+  }
+  .btn-borrar:hover { text-decoration: underline; }
+
   .chip-inactivo {
     font-size: 11px;
     background: var(--divisor);
@@ -378,7 +395,7 @@
     getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut
   } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js';
   import {
-    getFirestore, collection, query, where, orderBy, limit, onSnapshot, getDocs
+    getFirestore, collection, query, where, orderBy, limit, onSnapshot, getDocs, doc, deleteDoc, writeBatch
   } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
 
   const firebaseConfig = {
@@ -425,6 +442,41 @@
     div.className = 'vacio';
     div.textContent = mensaje;
     return div;
+  }
+
+  function botonBorrar(onBorrar) {
+    const cont = document.createElement('div');
+    cont.className = 'fila-acciones';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn-borrar';
+    btn.textContent = 'Borrar';
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      onBorrar();
+    });
+    cont.appendChild(btn);
+    return cont;
+  }
+
+  async function borrarDoc(coleccion, id, mensaje) {
+    if (!confirm(mensaje)) return;
+    try {
+      await deleteDoc(doc(db, coleccion, id));
+    } catch (e) {
+      alert('No se pudo borrar. Revisa tu conexión e intenta de nuevo.');
+    }
+  }
+
+  async function borrarVarios(coleccion, ids, mensaje) {
+    if (!confirm(mensaje)) return;
+    try {
+      const lote = writeBatch(db);
+      ids.forEach((id) => lote.delete(doc(db, coleccion, id)));
+      await lote.commit();
+    } catch (e) {
+      alert('No se pudo borrar. Revisa tu conexión e intenta de nuevo.');
+    }
   }
 
   // --- Login ---
@@ -592,6 +644,9 @@
       `);
       t.style.cursor = 'pointer';
       t.addEventListener('click', () => mostrarDetalleLiquidacion(l));
+      t.appendChild(botonBorrar(() =>
+        borrarDoc('liquidaciones_maestro', String(l.id), `¿Borrar este pago al maestro de ${money(l.totalComision)}? Esto no vuelve a marcar los pagos como pendientes de liquidar en la tablet. No se puede deshacer.`)
+      ));
       cont.appendChild(t);
     });
   }
@@ -666,14 +721,18 @@
 
     ventasCache.forEach((v) => {
       const detalle = (v.detalles || []).map((d) => `${d.cantidad}x ${d.nombreProducto}`).join(', ');
-      cont.appendChild(tarjeta(`
+      const t = tarjeta(`
         <div class="fila-superior">
           <strong>${fechaHora(v.fechaHora)}</strong>
           <span class="monto">${money(v.total)}</span>
         </div>
         <div class="detalle">${escapar(v.metodoPago)} · Cobró: ${escapar(v.nombreRecepcionista)}</div>
         ${detalle ? `<div class="detalle-chico">${escapar(detalle)}</div>` : ''}
-      `));
+      `);
+      t.appendChild(botonBorrar(() =>
+        borrarDoc('ventas', String(v.id), `¿Borrar la venta de ${money(v.total)} del ${fechaHora(v.fechaHora)}? No se puede deshacer.`)
+      ));
+      cont.appendChild(t);
     });
   }
 
@@ -702,13 +761,19 @@
       const total = filas.reduce((acc, p) => acc + p.monto, 0);
       const alumno = alumnos[primera.alumnoId];
       const nombre = alumno ? alumno.nombreCompleto : '(alumno eliminado)';
-      cont.appendChild(tarjeta(`
+      const t = tarjeta(`
         <div class="fila-superior">
           <strong>${escapar(nombre)}</strong>
           <span class="monto">${money(total)}</span>
         </div>
         <div class="detalle">${fechaHora(primera.fechaHora)} · ${escapar(primera.metodoPago)}${primera.tipoPlan ? ' · ' + escapar(primera.tipoPlan) : ''}</div>
-      `));
+      `);
+      const yaLiquidado = filas.some((p) => p.pagadoAlMaestro);
+      t.appendChild(botonBorrar(() => {
+        const advertencia = yaLiquidado ? '\n\nOjo: este pago ya está incluido en un pago al maestro registrado.' : '';
+        borrarVarios('pagos', filas.map((p) => String(p.id)), `¿Borrar el pago de ${nombre} por ${money(total)}? No se puede deshacer.${advertencia}`);
+      }));
+      cont.appendChild(t);
     });
   }
 
@@ -752,7 +817,7 @@
     const tareas = ['barrer', 'trapear', 'limpiarPuertas', 'limpiarVidrios', 'limpiarEspejos', 'limpiarRecepcion'];
     limpiezaCache.forEach((r) => {
       const completadas = tareas.filter((k) => r[k]).length;
-      cont.appendChild(tarjeta(`
+      const t = tarjeta(`
         <div class="fila-superior">
           <strong>${fechaIso(r.fecha)} · ${escapar(r.turno)}</strong>
           <span class="monto">${completadas}/${tareas.length}</span>
@@ -760,7 +825,11 @@
         <div class="detalle">Responsable: ${escapar(r.responsable)}</div>
         ${r.tareasExtra ? `<div class="detalle-chico">Extra: ${escapar(r.tareasExtra)}</div>` : ''}
         ${r.notas ? `<div class="detalle-chico">${escapar(r.notas)}</div>` : ''}
-      `));
+      `);
+      t.appendChild(botonBorrar(() =>
+        borrarDoc('limpieza', String(r.id), `¿Borrar el registro de limpieza del ${fechaIso(r.fecha)} (${r.turno})? No se puede deshacer.`)
+      ));
+      cont.appendChild(t);
     });
   }
 </script>
