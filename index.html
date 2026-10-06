@@ -667,6 +667,27 @@
   const etiquetaSemanasLiquidacion = (l) =>
     l.semanaDesde === l.semanaHasta ? `Semana ${l.semanaDesde}` : `Semanas ${l.semanaDesde} a ${l.semanaHasta}`;
 
+  // Las liquidaciones nuevas se pagan por monto fijo por alumno por semana; las antiguas, por porcentaje.
+  const esPorMontoFijo = (l) => (l.montoPorAlumnoSemana || 0) > 0;
+  const textoSemanas = (n) => (n === 1 ? '1 semana' : `${n} semanas`);
+
+  // Semana de un pago: la del grid o, si no la trae, la derivada de su fecha respecto a la
+  // primera inscripción del curso (igual que en la tablet).
+  const semanaCeroMs = (cursoId) => {
+    const fechas = Object.values(alumnos)
+      .filter((a) => a.cursoId === cursoId && a.fechaInscripcion)
+      .map((a) => {
+        const [y, m, d] = a.fechaInscripcion.split('-').map(Number);
+        return new Date(y, m - 1, d).getTime();
+      });
+    return fechas.length ? Math.min(...fechas) : Date.now();
+  };
+  const semanaDePago = (p, cero) => {
+    if (p.semanaCubierta != null) return p.semanaCubierta;
+    const dias = Math.floor((p.fechaHora - cero) / 86400000);
+    return Math.max(1, Math.floor(dias / 7) + 1);
+  };
+
   function renderMaestro() {
     const cont = $('maestro-lista');
     cont.innerHTML = '';
@@ -676,13 +697,19 @@
     }
 
     liquidacionesCache.forEach((l) => {
+      const detalle = esPorMontoFijo(l)
+        ? `${fechaHora(l.fechaLiquidacion)} · ${etiquetaSemanasLiquidacion(l)} · ${money(l.montoPorAlumnoSemana)} por alumno por semana`
+        : `${fechaHora(l.fechaLiquidacion)} · ${etiquetaSemanasLiquidacion(l)}`;
+      const resumen = esPorMontoFijo(l)
+        ? `${l.semanasAlumnoPagadas === 1 ? '1 semana pagada' : `${l.semanasAlumnoPagadas} semanas pagadas`} · ${l.cantidadAlumnos} ${l.cantidadAlumnos === 1 ? 'alumno' : 'alumnos'} · ${money(l.totalPagos)} en pagos de alumnos`
+        : `${money(l.totalPagos)} en pagos · ${l.cantidadPagos} pagos · ${l.cantidadAlumnos} alumnos`;
       const t = tarjeta(`
         <div class="fila-superior">
           <strong>${escapar(l.cursoNombre)}</strong>
           <span class="monto">${money(l.totalComision)}</span>
         </div>
-        <div class="detalle">${fechaHora(l.fechaLiquidacion)} · ${etiquetaSemanasLiquidacion(l)}</div>
-        <div class="detalle-chico">${money(l.totalPagos)} en pagos · ${l.cantidadPagos} pagos · ${l.cantidadAlumnos} alumnos</div>
+        <div class="detalle">${detalle}</div>
+        <div class="detalle-chico">${resumen}</div>
       `);
       t.style.cursor = 'pointer';
       t.addEventListener('click', () => mostrarDetalleLiquidacion(l));
@@ -702,30 +729,54 @@
       porAlumno.get(p.alumnoId).push(p);
     });
 
-    const filas = [...porAlumno.entries()]
-      .map(([alumnoId, pagosDelAlumno]) => ({
-        nombre: alumnos[alumnoId]?.nombreCompleto || '(alumno eliminado)',
-        monto: pagosDelAlumno.reduce((acc, p) => acc + p.monto, 0),
-        semanas: pagosDelAlumno.length
-      }))
-      .sort((a, b) => a.nombre.localeCompare(b.nombre));
-
     const rango = etiquetaSemanasLiquidacion(liquidacion);
-    const lineasTexto = filas
-      .map((f) => `• ${f.nombre} — ${money(f.monto)} (${f.semanas === 1 ? '1 semana' : f.semanas + ' semanas'})`)
-      .join('\n');
+    const porMonto = esPorMontoFijo(liquidacion);
+    const nombreDe = (alumnoId) => alumnos[alumnoId]?.nombreCompleto || '(alumno eliminado)';
+
+    let lineasTexto;
+    let resumenTexto;
+    if (porMonto) {
+      // Monto fijo: cada alumno aporta sus semanas pagadas × el monto por semana.
+      const cero = semanaCeroMs(liquidacion.cursoId);
+      const filas = [...porAlumno.entries()]
+        .map(([alumnoId, pagosDelAlumno]) => ({
+          nombre: nombreDe(alumnoId),
+          semanas: new Set(pagosDelAlumno.map((p) => semanaDePago(p, cero))).size
+        }))
+        .sort((a, b) => a.nombre.localeCompare(b.nombre));
+      lineasTexto = filas
+        .map((f) => `• ${f.nombre} — ${textoSemanas(f.semanas)} × ${money(liquidacion.montoPorAlumnoSemana)} = ${money(f.semanas * liquidacion.montoPorAlumnoSemana)}`)
+        .join('\n');
+      resumenTexto =
+        `Pago por alumno por semana: ${money(liquidacion.montoPorAlumnoSemana)}\n` +
+        `Semanas de alumno pagadas: ${liquidacion.semanasAlumnoPagadas}\n` +
+        `Total pagado al maestro: ${money(liquidacion.totalComision)}`;
+    } else {
+      // Liquidaciones antiguas (por porcentaje): lo que pagó cada alumno.
+      const filas = [...porAlumno.entries()]
+        .map(([alumnoId, pagosDelAlumno]) => ({
+          nombre: nombreDe(alumnoId),
+          monto: pagosDelAlumno.reduce((acc, p) => acc + p.monto, 0),
+          semanas: pagosDelAlumno.length
+        }))
+        .sort((a, b) => a.nombre.localeCompare(b.nombre));
+      lineasTexto = filas
+        .map((f) => `• ${f.nombre} — ${money(f.monto)} (${textoSemanas(f.semanas)})`)
+        .join('\n');
+      resumenTexto =
+        `Total de pagos: ${money(liquidacion.totalPagos)}\n` +
+        `Comisión pagada: ${money(liquidacion.totalComision)}`;
+    }
 
     $('modal-titulo').textContent = fechaHora(liquidacion.fechaLiquidacion);
-    $('modal-cuerpo').textContent =
-      `${liquidacion.cursoNombre} · ${rango}\n\nComisión pagada: ${money(liquidacion.totalComision)}\n\nPor alumno:\n${lineasTexto}`;
+    $('modal-cuerpo').textContent = `${liquidacion.cursoNombre} · ${rango}\n\n${resumenTexto}\n\nPor alumno:\n${lineasTexto}`;
     $('modal-overlay').classList.remove('oculto');
 
     const comprobante =
       `Escuela de Barberos — Comprobante de pago al maestro\n` +
       `${fechaHora(liquidacion.fechaLiquidacion)}\n` +
       `${liquidacion.cursoNombre} · ${rango}\n\n` +
-      `Total de pagos: ${money(liquidacion.totalPagos)}\n` +
-      `Comisión pagada: ${money(liquidacion.totalComision)}\n\n` +
+      `${resumenTexto}\n\n` +
       `Por alumno:\n${lineasTexto}`;
     $('modal-compartir').onclick = () => compartirTexto(comprobante);
   }
