@@ -373,6 +373,8 @@
       </section>
 
       <section id="tab-maestro" class="tab-panel">
+        <div class="resumen" id="maestro-resumen">Cargando…</div>
+        <div id="maestro-por-curso"></div>
         <div id="maestro-lista"></div>
       </section>
     </main>
@@ -408,7 +410,7 @@
     getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut
   } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js';
   import {
-    getFirestore, collection, query, where, orderBy, limit, onSnapshot, getDocs, doc, deleteDoc, writeBatch
+    getFirestore, collection, query, where, orderBy, limit, onSnapshot, getDocs, doc, deleteDoc, updateDoc, writeBatch
   } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
 
   const firebaseConfig = {
@@ -457,13 +459,13 @@
     return div;
   }
 
-  function botonBorrar(onBorrar) {
+  function botonBorrar(onBorrar, etiqueta = 'Borrar') {
     const cont = document.createElement('div');
     cont.className = 'fila-acciones';
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'btn-borrar';
-    btn.textContent = 'Borrar';
+    btn.textContent = etiqueta;
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       onBorrar();
@@ -472,9 +474,10 @@
     return cont;
   }
 
-  function confirmarPersonalizado(mensaje) {
+  function confirmarPersonalizado(mensaje, etiquetaAceptar = 'Borrar') {
     return new Promise((resolve) => {
       $('confirmar-mensaje').textContent = mensaje;
+      $('confirmar-aceptar').textContent = etiquetaAceptar;
       $('confirmar-overlay').classList.remove('oculto');
 
       const limpiar = () => {
@@ -657,9 +660,11 @@
     cargarPagos(null, null, null);
     cargarLimpieza(null, null, null);
 
-    onSnapshot(query(collection(db, 'liquidaciones_maestro'), orderBy('fechaLiquidacion', 'desc'), limit(50)), (snap) => {
-      liquidacionesCache = [];
-      snap.forEach((d) => liquidacionesCache.push(d.data()));
+    // Sin límite: el registro de pagos al maestro se muestra completo, de todas las fechas.
+    onSnapshot(query(collection(db, 'liquidaciones_maestro'), orderBy('fechaLiquidacion', 'desc')), (snap) => {
+      const docs = [];
+      snap.forEach((d) => docs.push({ ...d.data(), _docId: d.id }));
+      liquidacionesCache = unificarLiquidaciones(docs);
       renderMaestro();
     });
   }
@@ -688,7 +693,66 @@
     return Math.max(1, Math.floor(dias / 7) + 1);
   };
 
+  // Una misma liquidación puede estar guardada dos veces: con el formato anterior (documento numérico, sin desglose)
+  // y con el actual (documento "fecha_curso" que trae su desglose por alumno). Se muestra una sola vez, prefiriendo
+  // la que trae desglose; y si se quitó de la lista cualquiera de las dos, se quita la liquidación completa.
+  function unificarLiquidaciones(docs) {
+    const grupos = new Map();
+    docs.forEach((l) => {
+      const clave = String(l.fechaLiquidacion);
+      if (!grupos.has(clave)) grupos.set(clave, []);
+      grupos.get(clave).push(l);
+    });
+    const unicas = [];
+    grupos.forEach((grupo) => {
+      if (grupo.some((l) => l.eliminado)) return;
+      const elegida = grupo.find((l) => Array.isArray(l.detalleAlumnos)) || grupo[0];
+      unicas.push({ ...elegida, _docIds: grupo.map((l) => l._docId) });
+    });
+    return unicas.sort((a, b) => b.fechaLiquidacion - a.fechaLiquidacion);
+  }
+
+  // Quitar de la lista NO borra el registro: solo lo marca, así sigue guardado y la tablet no lo vuelve a mostrar aquí.
+  async function quitarLiquidacion(l) {
+    const mensaje = `¿Quitar de esta lista el pago al maestro de ${money(l.totalComision)} (${l.cursoNombre}, ${fechaHora(l.fechaLiquidacion)})? El registro no se pierde: sigue guardado en la tablet y en la nube.`;
+    if (!(await confirmarPersonalizado(mensaje, 'Quitar'))) return;
+    try {
+      await Promise.all(l._docIds.map((id) =>
+        updateDoc(doc(db, 'liquidaciones_maestro', id), { eliminado: true, eliminadoEn: Date.now() })
+      ));
+    } catch (e) {
+      alert('No se pudo quitar. Revisa tu conexión e intenta de nuevo.');
+    }
+  }
+
   function renderMaestro() {
+    const total = liquidacionesCache.reduce((acc, l) => acc + (l.totalComision || 0), 0);
+    $('maestro-resumen').textContent = liquidacionesCache.length === 0
+      ? 'Aún no hay pagos al maestro'
+      : `${liquidacionesCache.length} ${liquidacionesCache.length === 1 ? 'pago' : 'pagos'} al maestro · Total: ${money(total)}`;
+
+    // Subtotal por curso, para ver de un vistazo cuánto se le ha pagado al maestro en cada uno.
+    const porCurso = new Map();
+    liquidacionesCache.forEach((l) => {
+      const acumulado = porCurso.get(l.cursoNombre) || { total: 0, pagos: 0 };
+      acumulado.total += l.totalComision || 0;
+      acumulado.pagos += 1;
+      porCurso.set(l.cursoNombre, acumulado);
+    });
+    const contCursos = $('maestro-por-curso');
+    contCursos.innerHTML = '';
+    if (porCurso.size >= 2) {
+      const filas = [...porCurso.entries()]
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+        .map(([nombre, v]) => `
+          <div class="fila-superior" style="margin-top: 6px;">
+            <span class="detalle">${escapar(nombre)} · ${v.pagos} ${v.pagos === 1 ? 'pago' : 'pagos'}</span>
+            <span class="monto">${money(v.total)}</span>
+          </div>`)
+        .join('');
+      contCursos.appendChild(tarjeta(`<strong>Por curso</strong>${filas}`));
+    }
+
     const cont = $('maestro-lista');
     cont.innerHTML = '';
     if (liquidacionesCache.length === 0) {
@@ -713,63 +777,74 @@
       `);
       t.style.cursor = 'pointer';
       t.addEventListener('click', () => mostrarDetalleLiquidacion(l));
-      t.appendChild(botonBorrar(() =>
-        borrarDoc('liquidaciones_maestro', String(l.id), `¿Borrar este pago al maestro de ${money(l.totalComision)}? Esto no vuelve a marcar los pagos como pendientes de liquidar en la tablet. No se puede deshacer.`)
-      ));
+      t.appendChild(botonBorrar(() => quitarLiquidacion(l), 'Quitar de la lista'));
       cont.appendChild(t);
     });
   }
 
-  async function mostrarDetalleLiquidacion(liquidacion) {
+  // Desglose de las liquidaciones guardadas con el formato anterior (sin desglose propio): se reconstruye con los
+  // pagos de los alumnos, pero solo con los que de verdad corresponden (del mismo curso y de las semanas pagadas).
+  async function desgloseDesdePagos(liquidacion) {
     const snap = await getDocs(query(collection(db, 'pagos'), where('liquidacionId', '==', liquidacion.id)));
+    const cero = semanaCeroMs(liquidacion.cursoId);
     const porAlumno = new Map();
     snap.forEach((d) => {
       const p = d.data();
+      const alumno = alumnos[p.alumnoId];
+      if (!alumno || alumno.cursoId !== liquidacion.cursoId) return;
+      const semana = semanaDePago(p, cero);
+      if (semana < liquidacion.semanaDesde || semana > liquidacion.semanaHasta) return;
       if (!porAlumno.has(p.alumnoId)) porAlumno.set(p.alumnoId, []);
-      porAlumno.get(p.alumnoId).push(p);
+      porAlumno.get(p.alumnoId).push({ semana, monto: p.monto });
     });
+    return [...porAlumno.entries()].map(([alumnoId, pagos]) => {
+      const semanas = [...new Set(pagos.map((x) => x.semana))].sort((a, b) => a - b);
+      const montoPagos = pagos.reduce((acc, x) => acc + x.monto, 0);
+      const montoMaestro = esPorMontoFijo(liquidacion)
+        ? semanas.length * liquidacion.montoPorAlumnoSemana
+        : (montoPagos * (liquidacion.porcentaje || 0)) / 100;
+      return { nombre: alumnos[alumnoId].nombreCompleto, semanas, montoPagos, montoMaestro };
+    });
+  }
 
+  async function mostrarDetalleLiquidacion(liquidacion) {
     const rango = etiquetaSemanasLiquidacion(liquidacion);
     const porMonto = esPorMontoFijo(liquidacion);
-    const nombreDe = (alumnoId) => alumnos[alumnoId]?.nombreCompleto || '(alumno eliminado)';
+    const trajoDesglose = Array.isArray(liquidacion.detalleAlumnos);
+    const filas = (trajoDesglose ? liquidacion.detalleAlumnos : await desgloseDesdePagos(liquidacion))
+      .slice()
+      .sort((a, b) => String(a.nombre).localeCompare(String(b.nombre)));
 
     let lineasTexto;
-    let resumenTexto;
-    if (porMonto) {
+    if (filas.length === 0) {
+      lineasTexto = '(El desglose por alumno de este pago todavía no llega desde la tablet. Abre la app, entra al historial de pagos al maestro y toca el botón de sincronizar.)';
+    } else if (porMonto) {
       // Monto fijo: cada alumno aporta sus semanas pagadas × el monto por semana.
-      const cero = semanaCeroMs(liquidacion.cursoId);
-      const filas = [...porAlumno.entries()]
-        .map(([alumnoId, pagosDelAlumno]) => ({
-          nombre: nombreDe(alumnoId),
-          semanas: new Set(pagosDelAlumno.map((p) => semanaDePago(p, cero))).size
-        }))
-        .sort((a, b) => a.nombre.localeCompare(b.nombre));
       lineasTexto = filas
-        .map((f) => `• ${f.nombre} — ${textoSemanas(f.semanas)} × ${money(liquidacion.montoPorAlumnoSemana)} = ${money(f.semanas * liquidacion.montoPorAlumnoSemana)}`)
+        .map((f) => {
+          const semanas = f.semanas || [];
+          return `• ${f.nombre} — ${textoSemanas(semanas.length)} (${semanas.join(', ')}) × ${money(liquidacion.montoPorAlumnoSemana)} = ${money(f.montoMaestro)}`;
+        })
         .join('\n');
-      resumenTexto =
-        `Pago por alumno por semana: ${money(liquidacion.montoPorAlumnoSemana)}\n` +
-        `Semanas de alumno pagadas: ${liquidacion.semanasAlumnoPagadas}\n` +
-        `Total pagado al maestro: ${money(liquidacion.totalComision)}`;
     } else {
       // Liquidaciones antiguas (por porcentaje): lo que pagó cada alumno.
-      const filas = [...porAlumno.entries()]
-        .map(([alumnoId, pagosDelAlumno]) => ({
-          nombre: nombreDe(alumnoId),
-          monto: pagosDelAlumno.reduce((acc, p) => acc + p.monto, 0),
-          semanas: pagosDelAlumno.length
-        }))
-        .sort((a, b) => a.nombre.localeCompare(b.nombre));
       lineasTexto = filas
-        .map((f) => `• ${f.nombre} — ${money(f.monto)} (${textoSemanas(f.semanas)})`)
+        .map((f) => `• ${f.nombre} — ${money(f.montoPagos)} (${textoSemanas((f.semanas || []).length)})`)
         .join('\n');
-      resumenTexto =
-        `Total de pagos: ${money(liquidacion.totalPagos)}\n` +
-        `Comisión pagada: ${money(liquidacion.totalComision)}`;
     }
 
+    const resumenTexto = porMonto
+      ? `Pago por alumno por semana: ${money(liquidacion.montoPorAlumnoSemana)}\n` +
+        `Semanas de alumno pagadas: ${liquidacion.semanasAlumnoPagadas}\n` +
+        `Total pagado al maestro: ${money(liquidacion.totalComision)}`
+      : `Total de pagos: ${money(liquidacion.totalPagos)}\n` +
+        `Comisión pagada: ${money(liquidacion.totalComision)}`;
+    const aviso = !trajoDesglose && filas.length > 0
+      ? '\n\n(Desglose reconstruido con los pagos de los alumnos; se corrige solo al sincronizar desde la tablet.)'
+      : '';
+
     $('modal-titulo').textContent = fechaHora(liquidacion.fechaLiquidacion);
-    $('modal-cuerpo').textContent = `${liquidacion.cursoNombre} · ${rango}\n\n${resumenTexto}\n\nPor alumno:\n${lineasTexto}`;
+    $('modal-cuerpo').textContent = `${liquidacion.cursoNombre} · ${rango}\n\n${resumenTexto}\n\nPor alumno:\n${lineasTexto}${aviso}`;
     $('modal-overlay').classList.remove('oculto');
 
     const comprobante =
